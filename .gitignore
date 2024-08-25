@@ -1,0 +1,9 @@
+csv_results/
+data_ToN-IoT/
+fig_tsne/
+final_model/*
+Flowrest/
+ROC_fig/
+save_model/
+*dataset
+*.csv
