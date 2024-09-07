@@ -7,3 +7,7 @@ ROC_fig/
 save_model/
 *dataset
 *.csv
+*_csv
+*.txt
+cc2.py
+cc3.py

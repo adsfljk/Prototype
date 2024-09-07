@@ -11,7 +11,7 @@ import itertools
 # cicids 7 class
 
 
-def run_command(gpu_index, batch):
+def run_command(gpu_index, batch,num_gpus):
     # combinations = [list(combo) for combo in itertools.combinations([0,1,2,3,4,5,6,7,8,9], 4)]
     # combination = combinations[(gpu_index + 7*batch)%len(combinations)]
     # combination = [1,2,3,4,5,6,7,8,9]
@@ -23,16 +23,15 @@ def run_command(gpu_index, batch):
 
     # 不能有空格
     command = [
-        "python", "para.py",
-        "--gpu",str(gpu_index),
-        "--batch_size", str(random.choice([1024])),
-        # "--learning_rate", str(random.uniform(0.0001,0.01)),
-        "--temperature", str(random.uniform(0.001,1)),
-        # "--max_proto_num",str(random.choice([2000])),
-        "--prune_T",str(random.choice([10])),
-        # "--cls_threshold",str(random.uniform(0.001,1)),
-        "--dbscan_eps",str(random.uniform(0.0001,0.3)),
-        "--save_model","./save_model/ton_iot" + str(gpu_index + 7*batch),
+        "python", "cc3.py",
+        "--gpu",str(gpu_index % 8),
+        "--dataset","unsw-nb15",
+        "--boost_num",str(3),
+        "--temperature", str([10,5,15,20][int(gpu_index % 4)]),
+
+        "--prune_T",str([10,5,15,20][int(gpu_index % 4)]),
+        "--dbscan_eps",str([][int(gpu_index % 4)]),
+        "--save_model","./save_model/tmp" + str(20000+gpu_index + num_gpus*batch),
         # "--selected_class",#后面添加
     ]
     # for i in combination:
@@ -44,7 +43,7 @@ def run_command(gpu_index, batch):
 
 if __name__ == '__main__':
     
-    num_gpus = 7
+    num_gpus = 8
 
     # # 输出CSV文件的路径
     # output_csv = "results.csv"
@@ -65,7 +64,7 @@ if __name__ == '__main__':
         print(f"Starting batch {batch + 1}")
 
         for gpu_index in range(num_gpus):
-            p = Process(target=run_command, args=(gpu_index+1,batch))
+            p = Process(target=run_command, args=(gpu_index,batch,num_gpus))
             p.start()
             processes.append(p)
 

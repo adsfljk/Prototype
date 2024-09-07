@@ -23,21 +23,16 @@ def run_command(gpu_index, batch,num_gpus):
 
     # 不能有空格
     command = [
-        "python", "cc_increment.py",
+        "python", "cc2.py",
         "--gpu",str(gpu_index % 8),
+        "--incremental_train",str(False),
         "--temperature", str(random.uniform(0.001,1)),
-        # "--temperature", str(0.5825),
-        # "--thr_method",["mean","pot","three_sigma","median","percentile"][int(gpu_index % 5)],
-        # "--prune_T",str(random.choice([5,8,10,15,5,20,30])),
-        # "--prune_T",str(15),
-        # "--dataset",str(["ton-iot","cicids-2018"][int(gpu_index % 2)]),
+
         "--dataset","unsw-nb15",
-        "--boost_num",str(5),
-        "--prune_T",str([5,10,15,20][int(gpu_index % 4)]),
-        # "--add_order_id",str(int(gpu_index % 8)),
-        "--dbscan_eps",str(random.uniform(0.0001,0.1)),
-        # "--dbscan_eps",str(0.025918019),
-        "--save_model","./save_model/tmp" + str(gpu_index + num_gpus*batch),
+        "--boost_num",str(3),
+        "--prune_T",str([10,5,15,20][int(gpu_index % 4)]),
+        "--dbscan_eps",str(random.uniform(0,0.3)),
+        "--save_model","./save_model/tmp" + str(10000+gpu_index + num_gpus*batch),
         # "--selected_class",#后面添加
     ]
     # for i in combination:
@@ -49,7 +44,7 @@ def run_command(gpu_index, batch,num_gpus):
 
 if __name__ == '__main__':
     
-    num_gpus = 16
+    num_gpus = 8
 
     # # 输出CSV文件的路径
     # output_csv = "results.csv"

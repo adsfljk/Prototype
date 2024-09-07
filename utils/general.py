@@ -3,8 +3,27 @@ import torch.nn as nn
 import numpy as np
 import random
 import statistics
+from collections import Counter
+import copy
 
 batch_size = 512
+def merge_rules(a, b):
+    # 确定两个列表中最小的长度
+    min_length = min(len(a), len(b))
+    result = []
+
+    # 合并相同索引的元素
+    for i in range(min_length):
+        result.append(a[i] + b[i])
+    
+    # 添加多余的元素
+    if len(a) > min_length:
+        result.extend(a[min_length:])
+    elif len(b) > min_length:
+        result.extend(b[min_length:])
+
+    return result
+
 
 def test_model_acc(model, X_test, y_test, feature_min, feature_max):
     test_acc_num = 0
@@ -128,6 +147,8 @@ def set_prioity(cls_fix):
         
     return priority_dict , add_class_rules_keys
 
+
+
 def check_rule(sample, thres_list):
 
     for dim1 in range(sample.shape[0]):
@@ -135,6 +156,103 @@ def check_rule(sample, thres_list):
             return False
     
     return True
+
+# 在有向图中，给定两个点，判断是否存在有向路径
+def have_path(restrict, st, ed):
+    # 构建邻接表，注意允许重边
+    graph = {}
+    for u, v in restrict:
+        if u not in graph:
+            graph[u] = []
+        graph[u].append(v)
+    
+    # 深度优先搜索判断是否有路径
+    def dfs(node, target, visited):
+        if node == target:
+            return True
+        visited.add(node)
+        for neighbor in graph.get(node, []):
+            if neighbor not in visited:
+                if dfs(neighbor, target, visited):
+                    return True
+        return False
+
+    # 用集合 visited 来避免重复访问节点
+    visited = set()
+    return dfs(st, ed, visited)
+
+
+
+def cal_rule_num(cls_fix,num_classes,class_rules): # 输入的cls_fix已经是排好序了的
+        
+        res = 0
+
+        # 定义约束条件
+        restrict = []
+        reduced_cls_fix = {}
+        # print(cls_fix)
+        # exit()
+        for item in cls_fix:
+            gt = cls_fix[item]
+            proto_list = [s for s in item.split('#') if s] # 过滤掉空字符串
+            for idx in range(len(proto_list)):
+                proto_list[idx] = int(proto_list[idx])
+            
+            # 判断所有原型是否都属于同一类别
+            flag = 1
+            for idx in range(len(proto_list)):
+                if proto_list[idx] // 10000 != proto_list[0] // 10000:
+                    flag = 0
+                    break
+            if flag == 1: # 全相同
+                if gt != proto_list[0] // 10000: # 这种情况必须加一，否则无需处理
+                    reduced_cls_fix[item] = gt
+                    res += 1
+                continue
+            
+            # 判断gt类别是否存在于原型中，不存在则直接加一
+            flag = 1
+            for idx in range(len(proto_list)):
+                if gt == proto_list[idx] // 10000:
+                    flag = 0
+                    break
+            if flag == 1:
+                reduced_cls_fix[item] = gt
+                res += 1
+                continue
+            
+            # 开始增加约束条件（类似拓扑排序）
+            gt_proto = []
+            other_proto = []
+            for idx in range(len(proto_list)):
+                if proto_list[idx] // 10000 == gt:
+                    gt_proto.append(proto_list[idx])
+                else:
+                    other_proto.append(proto_list[idx])
+            
+           # 约束条件尝试
+            flag = 1
+            add_edge_num = 0
+            for dim1 in range(len(gt_proto)):
+                if flag == 0:
+                    break
+                for dim2 in range(len(other_proto)):
+                    if have_path(restrict, other_proto[dim2], gt_proto[dim1]): # 反向判断，如果存在边
+                        flag = 0
+                        break
+                    else:
+                        add_edge_num += 1
+                        restrict.append((gt_proto[dim1], other_proto[dim2]))
+            
+            if flag == 0: # 当前规则不能被满足
+                reduced_cls_fix[item] = gt
+                res += 1
+                # 回退，删掉增加的有向边
+                for _ in range(add_edge_num):
+                    restrict.pop()
+            # 否则无需进行任何操作，既不用回退边，也无需对res计数
+            
+        return res,reduced_cls_fix
 
 # 如果有多个表项都匹配成功，则返回具有最高优先级的表项结果（交换机上也是这样的）
 def solve_conflict(old_X, old_y,num_classes,class_rules):
@@ -166,19 +284,70 @@ def solve_conflict(old_X, old_y,num_classes,class_rules):
         
         if cls_res_hash not in cls_fix:
             cls_fix[cls_res_hash] = []
-        
+
         cls_fix[cls_res_hash].append(old_y[idx])
     
+    cls_fix = dict(sorted(cls_fix.items(), key=lambda item: Counter(item[1]).most_common(1)[0][1], reverse=True))
+
     for p in cls_fix:
         cls_fix[p] = statistics.mode(cls_fix[p])
+    # confilct rule num
+    conflict_rule_num,reduced_cls_fix = cal_rule_num(cls_fix,num_classes,class_rules)
 
-    
+    return cls_fix,reduced_cls_fix,conflict_rule_num
+
+
+def intersect_rules(list1, list2):
+    # 创建一个空列表存储交集后的规则
+    intersected_rules = []
+
+    # 确保两个列表长度相同才能逐项比较
+    if len(list1) != len(list2):
+        raise ValueError("两个列表的长度应相同")
+
+    # 遍历两个列表的规则，并计算交集
+    for i in range(len(list1)):
+        lower_bound = max(list1[i][0], list2[i][0])  # 取较大的下界
+        upper_bound = min(list1[i][1], list2[i][1])  # 取较小的上界
         
-    return cls_fix
+        # 如果下界小于上界，表示有交集
+        if lower_bound <= upper_bound:
+            intersected_rules.append([lower_bound, upper_bound])
+        else:
+            return -1
+    return intersected_rules
+
+def conflict_2rule(cls_fix,class_rules,num_classes):
+    conflict_rules = [[] for i in range(num_classes)]
+    conflict_rules_pri = [[] for i in range(num_classes)]
+    for key, value in cls_fix.items():
+        ids = key.strip('#').split('#')
+        for i,id in enumerate(ids):
+            dim1 = int(id) // 10000
+            dim2 = int(id) % 10000
+            if i == 0:
+                tmp = copy.deepcopy(class_rules[dim1][dim2])
+            else:
+                tmp2 = copy.deepcopy(class_rules[dim1][dim2])
+                tmp = intersect_rules(tmp,tmp2)
+                if tmp == -1:
+                    break
+        if tmp == -1:
+            continue
+        conflict_rules_pri[value].append(10000 + len(ids))
+        conflict_rules[value].append(tmp)
+    return conflict_rules,conflict_rules_pri
+        
 
 
+                
 
-def export_range(X_train, y_train,attack_classes,num_classes,class_rules,log_class):
+
+def export_range(num_classes,log_class,\
+                 class_rules,priority_dict,\
+                 data_plane_remain_rule,
+                 conflict_rules,conflict_rules_pri,\
+                 remain_conflict_rules):
     param_names = [
         "ipv4_protocol", "ipv4_ihl", "ipv4_tos", "ipv4_flags", 
         "ipv4_ttl", "meta_dataoffset", "meta_flags", 
@@ -203,8 +372,8 @@ def export_range(X_train, y_train,attack_classes,num_classes,class_rules,log_cla
         log_label_name = attack_classes[log_class]
     
     # cal entry priority
-    cls_fix = solve_conflict(X_train, y_train,num_classes,class_rules)
-    priority_dict = set_prioity(cls_fix)
+    # cls_fix = solve_conflict(X_train, y_train,num_classes,class_rules)
+    # priority_dict = set_prioity(cls_fix)
     # TODO 检查rule是否矛盾
 
     # 打开文件时使用 'w' 模式清空文件内容

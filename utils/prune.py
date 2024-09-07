@@ -25,6 +25,9 @@ def model_prune(model, num_classes, X_train, y_train, feature_min, feature_max, 
 
         for dim1 in range(num_classes):
             
+            if model.class_prototype[dim1].shape[1] == 0:
+                continue
+            
             train_batch = train_batch.view(train_batch.shape[0], 1, feature_num)
             
             if model.cal_dis == 'l_n':

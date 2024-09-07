@@ -13,7 +13,8 @@ from sklearn.manifold import TSNE, LocallyLinearEmbedding, Isomap
 from matplotlib import pyplot as plt
 from sklearn.metrics import roc_curve,auc,confusion_matrix,accuracy_score
 from pot_utils.pot import pot,pot_min
-
+from sklearn.model_selection import train_test_split
+from collections import Counter
 
 
 def main(args,add_order,output_csv,export_entry = False):
@@ -22,41 +23,50 @@ def main(args,add_order,output_csv,export_entry = False):
 
 
     first_flag = 1
-    for log_class in add_order:
+    for idx_log_class,log_class in enumerate(add_order):
+
         X_train, X_test, y_train, y_test, feature_min, feature_max,\
         unknown_data_list, unknown_label_list,num_classes,attack_classes = get_data(args)
 
+        epochs = args.epochs
+        if log_class==-1:
+            print('----------ALL----------')
+        else:
+            print('----------',attack_classes[log_class],'----------')
+            
         a,b = np.unique(y_train,return_counts=True)
         print(a,b)
+        # exit()
         
         feature_num = X_train.shape[1]
         assert feature_num == len(feature_min)
         assert feature_num == len(feature_max)
 
         set_global_seed(args.seed)
+
         if first_flag == 1:
             # boosting之前的第一次初始化
             this_X_train = X_train.copy()
             this_y_train = y_train.copy()
-            first_flag = 0
-    
-        epochs = args.epochs
-        if log_class==-1:
-            print('----------ALL----------')
+            class_rules = []
+            if args.incremental_train == True:
+                first_flag = 0
+
         else:
-            print('----------',attack_classes[log_class],'----------')
+            class_rules = old_class_rules
 
-        class_rules = []
-        # exit()
-
-        for boost_iter in range(5):
+        for boost_iter in range(args.boost_num):
             # step0: init model
             print(boost_iter,'step0: init model')
 
             a,b = np.unique(this_y_train,return_counts=True)
             print(a,b)
             model = prototype(num_classes, feature_num, [args.max_proto_num for _ in range(num_classes)], args.temperature, args.cal_dis, args.cal_mode).cuda()
-            model = init_model(model, args.init_type,args.dbscan_eps,args.min_samples, this_X_train, this_y_train, feature_min, feature_max)
+            if args.init_methed == "boost_train":
+                model = init_model(model, args.init_type,args.dbscan_eps,args.min_samples, this_X_train, this_y_train, feature_min, feature_max)
+            else:
+                model = init_model(model, args.init_type,args.dbscan_eps,args.min_samples, X_train, y_train, feature_min, feature_max)
+
 
 
             for idx in range(num_classes):
@@ -104,7 +114,7 @@ def main(args,add_order,output_csv,export_entry = False):
                     best_train_acc = train_acc
                     model.save_parameter(args.save_model+'_model_best.pth')
 
-                print('epoch = %d/%d, train_acc = %.3f%%, best_train_acc = %.3f%%' % (epoch + 1, args.epochs, train_acc, best_train_acc))
+            print('epoch = %d/%d, train_acc = %.3f%%, best_train_acc = %.3f%%' % (epoch + 1, args.epochs, train_acc, best_train_acc))
 
 
 
@@ -119,9 +129,9 @@ def main(args,add_order,output_csv,export_entry = False):
             
             model = model_prune(model, num_classes, this_X_train, this_y_train, feature_min, feature_max, args.max_proto_num, args.prune_T)
 
-            if boost_iter==0:
-                prune_acc = test_model_acc(model, X_test, y_test, feature_min, feature_max)
-                print('prune_T = %d, distance-based test acc after prune: %.3f%%' % (args.prune_T, prune_acc))
+            # if boost_iter==0:
+            #     prune_acc = test_model_acc(model, X_test, y_test, feature_min, feature_max)
+            #     print('prune_T = %d, distance-based test acc after prune: %.3f%%' % (args.prune_T, prune_acc))
             model.save_parameter(args.save_model + '_model_prune.pth')
 
 
@@ -227,9 +237,7 @@ def main(args,add_order,output_csv,export_entry = False):
             for dim1 in range(num_classes):
                 temp_1 = []
                 for dim2 in range(model.class_prototype[dim1].shape[1]):
-                    temp_2 = []
-                    for dim3 in range(feature_num):
-                        temp_2.append([1e10, -1e10])
+                    temp_2 = [[1e10, -1e10] for dim3 in range(feature_num)]
                     
                     for dim4 in range(len(dist_list[dim1][dim2])):
                         sample = dist_list[dim1][dim2][dim4][1]
@@ -237,13 +245,13 @@ def main(args,add_order,output_csv,export_entry = False):
                             temp_2[dim5][0] = min(temp_2[dim5][0], sample[dim5])
                             temp_2[dim5][1] = max(temp_2[dim5][1], sample[dim5])
 
-                            
+
                     temp_1.append(temp_2)
                 temp_class_rules.append(temp_1)
 
             # step5: 新旧模型boosting
-            if boost_iter == 0:
-                class_rules = temp_class_rules
+            if boost_iter == 0:                
+                class_rules = merge_rules(class_rules,temp_class_rules)
             else:
                 for dim1 in range(num_classes):
                     for dim2 in range(len(temp_class_rules[dim1])):
@@ -254,59 +262,59 @@ def main(args,add_order,output_csv,export_entry = False):
             #     for dim1 in range(num_classes):
             #         for dim2 in range(len(class_rules[dim1])):
             #             for dim3 in range(feature_num):
-            #                 a = class_rules[dim1][dim2][dim3]
+            #                 a = class_rules[dim1][dim2][dim3].copy()
 
             #                 tmp = f"[{a[0]},{a[1]}]"
 
             #                 file.write(f"{dim1},{dim2},{dim3}: {tmp}\n")
 
-            # 这里可以灵活点，训练集和测试集都试试，看结果有区别没
-            if args.solve_conflict_on == 'train_set':
-                cls_fix = solve_conflict(X_train, y_train,num_classes,class_rules)
-            elif args.solve_conflict_on == 'test_set':
-                cls_fix = solve_conflict(X_test, y_test,num_classes,class_rules)
-            print('solve match conflict:')
-            print('conflict number = ', len(cls_fix))
-            print(cls_fix)
+            # # 这里可以灵活点，训练集和测试集都试试，看结果有区别没
+            # if args.solve_conflict_on == 'train_set':
+            #     cls_fix = solve_conflict(X_train, y_train,num_classes,class_rules)
+            # elif args.solve_conflict_on == 'test_set':
+            #     cls_fix = solve_conflict(X_test, y_test,num_classes,class_rules)
+            # print('solve match conflict:')
+            # print('conflict number = ', len(cls_fix))
+            # print(cls_fix)
 
-            no_match = 0
-            tot = 0
-            tot_overlap = 0
-            overlap_success = 0
+            # no_match = 0
+            # tot = 0
+            # tot_overlap = 0
+            # overlap_success = 0
 
-            for idx in range(X_test.shape[0]):
+            # for idx in range(X_test.shape[0]):
                 
-                sample = X_test[idx]
-                cls_res = []
+            #     sample = X_test[idx]
+            #     cls_res = []
                 
-                for dim1 in range(num_classes):
-                    for dim2 in range(len(class_rules[dim1])):
-                        if check_rule(sample, class_rules[dim1][dim2]):
+            #     for dim1 in range(num_classes):
+            #         for dim2 in range(len(class_rules[dim1])):
+            #             if check_rule(sample, class_rules[dim1][dim2]):
                             
-                            if (dim1 * 10000 + dim2) not in cls_res:
-                                cls_res.append(dim1 * 10000 + dim2)
+            #                 if (dim1 * 10000 + dim2) not in cls_res:
+            #                     cls_res.append(dim1 * 10000 + dim2)
 
-                # fix important bug: cls_res[0], not cls_res
-                if len(cls_res) == 0:
-                    no_match += 1
-                if len(cls_res) == 1 and cls_res[0] // 10000 == y_test[idx]:
-                    tot += 1
-                elif len(cls_res) >= 2:
-                    tot_overlap += 1
-                    cls_res.sort(reverse=False)
-                    cls_res_hash = '#'
-                    for p in cls_res:
-                        cls_res_hash += str(p)
-                        cls_res_hash += '#'
-                    if cls_fix[cls_res_hash] == y_test[idx]:
-                        tot += 1
-                        overlap_success += 1
+            #     # fix important bug: cls_res[0], not cls_res
+            #     if len(cls_res) == 0:
+            #         no_match += 1
+            #     if len(cls_res) == 1 and cls_res[0] // 10000 == y_test[idx]:
+            #         tot += 1
+            #     elif len(cls_res) >= 2:
+            #         tot_overlap += 1
+            #         cls_res.sort(reverse=False)
+            #         cls_res_hash = '#'
+            #         for p in cls_res:
+            #             cls_res_hash += str(p)
+            #             cls_res_hash += '#'
+            #         if cls_fix[cls_res_hash] == y_test[idx]:
+            #             tot += 1
+            #             overlap_success += 1
                 
-            print('global rule-based accuracy on test_data = %.3f%%, samples have overlap = %d/%d, rate = %.3f%%, overlap success rate = %.3f%%, no match rate = %.3f%%' % (tot / X_test.shape[0] * 100, tot_overlap, X_test.shape[0], tot_overlap / X_test.shape[0] * 100, overlap_success / X_test.shape[0] * 100, no_match / X_test.shape[0] * 100))
+            # print('global rule-based accuracy on test_data = %.3f%%, samples have overlap = %d/%d, rate = %.3f%%, overlap success rate = %.3f%%, no match rate = %.3f%%' % (tot / X_test.shape[0] * 100, tot_overlap, X_test.shape[0], tot_overlap / X_test.shape[0] * 100, overlap_success / X_test.shape[0] * 100, no_match / X_test.shape[0] * 100))
 
             # step6: 过滤出分类错误的训练样本，以供下一次迭代学习
             
-            cls_fix = solve_conflict(X_train, y_train,num_classes,class_rules)
+            cls_fix,_,_ = solve_conflict(X_train, y_train,num_classes,class_rules)
             
             no_match = 0
             tot = 0
@@ -354,7 +362,7 @@ def main(args,add_order,output_csv,export_entry = False):
             this_X_train = X_train[fault_list]
             this_y_train = y_train[fault_list]
             # boost end 
-
+    #######################################################################################
 
         
 
@@ -371,6 +379,7 @@ def main(args,add_order,output_csv,export_entry = False):
                     unknown_data = unknown_data_list[unknown_class_idx]
 
                     unknown_label = unknown_label_list[unknown_class_idx]
+                    unknown_data, _, unknown_label, _ = train_test_split(unknown_data, unknown_label, test_size=args.test_split_size, random_state=2023)
 
                     this_X_train = unknown_data.copy()
                     this_y_train = np.ones_like(unknown_label) * num_classes
@@ -388,10 +397,30 @@ def main(args,add_order,output_csv,export_entry = False):
                                 tmp_old_class_rules.append(class_rules[dim1][dim2])
 
                         old_class_rules.append(tmp_old_class_rules)
-            # reload X
 
-            cls_fix = solve_conflict(X_train, y_train,num_classes,old_class_rules)
-            
+
+            cls_fix,_,_ = solve_conflict(X_train, y_train,num_classes,old_class_rules)
+
+            # data plane rule remain for this incremental class
+            # 增量没有被删 ,没有参加拓步排序的规则可以保留
+            # 留给下个类别的
+            all_conflict_id = [] 
+            for key, value in cls_fix.items():
+                ids = key.strip('#').split('#')
+                all_conflict_id.extend(ids)
+
+            data_plane_remain_rule = []
+            remain_num = 0
+            for dim1 in range(num_classes):
+                data_plane_remain_rule_tmp = []
+                for dim2 in range(len(old_class_rules[dim1])):
+                    if str(dim1 * 10000 + dim2) not in all_conflict_id:
+                        data_plane_remain_rule_tmp.append(old_class_rules[dim1][dim2])
+                        remain_num += 1
+                data_plane_remain_rule.append(data_plane_remain_rule_tmp)
+                        
+
+            # reload X
             no_match = 0
             tot = 0
             tot_overlap = 0
@@ -433,14 +462,15 @@ def main(args,add_order,output_csv,export_entry = False):
                     else:
                         fault_list.append(idx)
                 
-            print('global rule-based accuracy on train_data = %.3f%%, samples have overlap = %d/%d, rate = %.3f%%, overlap success rate = %.3f%%, no match rate = %.3f%%' % (tot / X_train.shape[0] * 100, tot_overlap, X_train.shape[0], tot_overlap / X_train.shape[0] * 100, overlap_success / X_train.shape[0] * 100, no_match / X_train.shape[0] * 100))
+            print('incremental old rule-based accuracy on train_data = %.3f%%, samples have overlap = %d/%d, rate = %.3f%%, overlap success rate = %.3f%%, no match rate = %.3f%%' % (tot / X_train.shape[0] * 100, tot_overlap, X_train.shape[0], tot_overlap / X_train.shape[0] * 100, overlap_success / X_train.shape[0] * 100, no_match / X_train.shape[0] * 100))
             # for next new class
             this_X_train = np.concatenate((this_X_train, X_train[fault_list]), axis=0)
             this_y_train = np.concatenate((this_y_train, y_train[fault_list]), axis=0)
 
+        else:
+            remain_num = -1
+            data_plane_remain_rule = [[] for i in range(num_classes)]
 
-        if export_entry==True:
-            export_range()
 
         # Detection Rate
         #           new old
@@ -487,15 +517,40 @@ def main(args,add_order,output_csv,export_entry = False):
         # pre_old   fn  tn
         # 这里可以灵活点，训练集和测试集都试试，看结果有区别没
         if args.solve_conflict_on == 'train_set':
-            cls_fix = solve_conflict(X_train, y_train,num_classes,class_rules)
+            cls_fix,reduced_cls_fix,conflict_rule_num = solve_conflict(X_train, y_train,num_classes,class_rules)
         elif args.solve_conflict_on == 'test_set':
-            cls_fix = solve_conflict(X_test, y_test,num_classes,class_rules)
+            cls_fix,reduced_cls_fix,conflict_rule_num = solve_conflict(X_test, y_test,num_classes,class_rules)
+        
+
+        conflict_rules,conflict_rules_pri = conflict_2rule(reduced_cls_fix,class_rules,num_classes)
+
+        # 增量保留重叠：保留下来的原型，同时出现上次规则中
+        remain_conflict_rules = [[] for i in range(num_classes)]
+        remain_conflict_rules_num = 0
+
+        if idx_log_class != 0:
+            
+            for dim1 in range(num_classes-1):
+                for dim2 in range(len(conflict_rules[dim1])):
+                    if conflict_rules[dim1][dim2] in old_conflict_rules[dim1]:
+                        remain_conflict_rules[dim1].append(conflict_rules[dim1][dim2])
+                        remain_conflict_rules_num += 1
+
+        old_conflict_rules = conflict_rules.copy()
+
+       
         print('solve match conflict:')
         print(cls_fix)
-        priority_dict , add_class_rules_keys = set_prioity(cls_fix)
+        
+        save_num = len(cls_fix) - conflict_rule_num
+        # priority_dict , add_class_rules_keys = set_prioity(cls_fix)
         # print("-----priority_dict------",priority_dict)
-        rule_num = sum([len(i) for i in class_rules]) + len(add_class_rules_keys)
-        # print(len(add_class_rules_keys),add_class_rules_keys)
+        # conflict_rule_num = len(add_class_rules_keys)
+        rule_num = sum([len(i) for i in class_rules]) + conflict_rule_num
+        if log_class != -1:
+            old_rule_num = sum([len(i) for i in old_class_rules])
+        else:
+            old_rule_num = -1
 
 
         tot = 0
@@ -575,6 +630,9 @@ def main(args,add_order,output_csv,export_entry = False):
 
 
 
+        if export_entry==True:
+            export_range()
+
 
         choose_FPR = 100*new_cm[2]/(new_cm[2]+new_cm[3])
         # tp,fn,fp,tn对应相加
@@ -586,7 +644,8 @@ def main(args,add_order,output_csv,export_entry = False):
             
             choose_TPR = 100*new_cm[0]/(new_cm[0]+new_cm[1])
             log_class_name = attack_classes[log_class]
-        experi_csv = [args.dataset,log_class_name,args.cls_threshold,args.temperature,args.prune_T,args.dbscan_eps,prune_acc,detection_acc,choose_TPR,choose_FPR,final_acc,rule_num]
+        experi_csv = [args.dataset,log_class_name,args.cls_threshold,args.boost_num,args.temperature,args.prune_T,args.dbscan_eps,detection_acc,choose_TPR,choose_FPR,final_acc,\
+                      rule_num,old_rule_num,remain_num,conflict_rule_num,remain_conflict_rules_num,save_num]
 
 
                 
@@ -628,26 +687,35 @@ if __name__=="__main__":
 
     parser = argparse.ArgumentParser("try to include all parameters")
 
-    parser.add_argument('--gpu', type=int, default=0, help='single GPU device, should in [0-7]')
+    parser.add_argument('--gpu', type=int, default=1, help='single GPU device, should in [0-7]')
     parser.add_argument('--batch_size', type=int, default=512, help='batch size')
-    parser.add_argument('--epochs', type=int, default=200, help='training epochs')
+    parser.add_argument('--epochs', type=int, default=300, help='training epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
     parser.add_argument('--temperature', type=float, default=0.1, help='training temperature, very important')
     parser.add_argument('--max_proto_num', type=int, default=2000, help='initial prototype number')
     parser.add_argument('--prune_T', type=int, default=10, help='model prune parameter')
-    parser.add_argument('--cls_threshold', type=float, default=1, help='class distance threshold, very important')
+    parser.add_argument('--cls_threshold', type=float, default=1.2, help='class distance threshold, very important')
     parser.add_argument('--init_type', type=str, default='DBSCAN', help='k-means / DBSCAN / NONE')
+    parser.add_argument('--init_methed', type=str, default='boost_train', help='boost_train/ X_train')
+    parser.add_argument('--incremental_train', type=bool, default=True, help="class incremental train")
+
+
+
     parser.add_argument('--dbscan_eps', type=float, default=0.01, help='training temperature, very important, not too small')
     parser.add_argument('--min_samples', type=int, default=2, help='initial prototype number')
+    parser.add_argument('--boost_num', type=int, default=3, help='boost iter number')
+
 
     parser.add_argument('--cal_dis', type=str, default='l_n', help='only support l_n now')
     parser.add_argument('--cal_mode', type=str, default='abs_trans', help='only support abs_trans now')
     parser.add_argument('--seed', type=int, default=2024, help='random seed')
-    parser.add_argument('--dataset', type=str, default='ton-iot', help='ton-iot / ISCX / cicids')
+    parser.add_argument('--dataset', type=str, default='unsw-nb15', help='ton-iot / ISCX / cicids')
     parser.add_argument('--attack_max_samples', type=int, default=30000, help='ton-iot dataset: max samples per attack')
-    parser.add_argument('--selected_class', type=list, default=[0, 1,4], help='ton-iot dataset: selected attack class, in [1-9]')
+    parser.add_argument('--selected_class', type=list, default=[0, 1], help='ton-iot dataset: selected attack class, in [1-9]')
     parser.add_argument('--test_split_size', type=float, default=0.8, help='test split size, when few-shot setting, should large')
-    parser.add_argument('--thres_extend', type=float, default=1, help='extend the thres ')
+    parser.add_argument('--add_order_id', type=int, default=1, help='add_order_id')
+
+    
 
 
     parser.add_argument('--thr_method', type=str, default="mean", help='method of choose thres: mean /pot / three_sigma')
@@ -660,50 +728,74 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    # args.save_model = './final_model/'+args.dataset+'_'+args.thr_method
 
     # cicids 0,1,||4,2,5,6,3
     # iscx   2,4,||5,1,3,0
     # iot    (0),1,3,4,||5,8,6,7,9,2
 
-    for dataset in ['ton-iot']:#'iscx','cicids','ton-iot','unibs',"unsw"
+    for dataset in [args.dataset]:#'iscx','cicids','ton-iot','unibs',"unsw-iot"
         args.dataset = dataset
         if dataset == 'iscx':
             args.selected_class = [2,4,]
-            add_order = [5,1,3,0]
+            add_order = [5,1,3,0,-1]
             args.batch_size = 256
             args.learning_rate = 0.001
-            args.temperature = 0.3
-            args.prune_T = 7
-            args.dbscan_eps = 0.005
+            # args.temperature = 0.3
+            # args.prune_T = 7
+            # args.dbscan_eps = 0.005
             args.min_samples = 2
 
 
-        elif dataset == 'cicids':
+        elif dataset == 'cicids-2017':
             args.selected_class = [0,1,]
-            add_order = [4,2,5,6,3]
+            add_order = [4,2,5,6,3,-1]
             args.batch_size = 512
-            args.learning_rate = 0.003902
-            args.temperature = 0.1
-            args.prune_T = 5
-            args.dbscan_eps = 0.005
+            args.learning_rate = 0.001
+            # args.temperature = 0.1
+            # args.prune_T = 5
+            # args.dbscan_eps = 0.005
+            args.min_samples = 2
+
+        elif dataset == 'cicids-2018':
+            args.selected_class = [0,1,]
+            add_order = [2,3,4,5,6,7,8,9,10,-1]
+            args.batch_size = 256
+            args.learning_rate = 0.001
+            args.attack_max_samples = 10000
+            args.boost_num = 5
+            # args.temperature = 0.315973553
+            # args.prune_T = 10
+            # args.dbscan_eps = 0.202365925
+            
+            # args.temperature = 0.1757949
+            # args.prune_T = 10
+            # args.dbscan_eps = 0.340206712
+
+
+
             args.min_samples = 2
 
         elif dataset == 'ton-iot':
-            args.selected_class = [1,3,]
-            add_order = [ 4,5,8,6,7,9,2,-1]
+            args.selected_class = [0,8]
+            add_order = [4,6,9,2,1,7,3,5,-1]
+ 
 
-            args.batch_size = 512
+            args.attack_max_samples = 30000
+            args.batch_size = 256
             args.learning_rate = 0.001
-            # args.temperature = 0.5825
+            args.boost_num = 5
+            # args.temperature = 0.10411489
             # args.prune_T = 15
-            # args.dbscan_eps = 0.05
+            # args.dbscan_eps = 0.136310726
+
+
+
             args.min_samples = 2
 
 
         elif dataset == 'unibs':
             args.selected_class = [0,1,]
-            add_order = [2,3,5,6,7,4]
+            add_order = [2,3,5,6,7,4,-1]
             args.batch_size = 1024
             args.learning_rate = 0.001
             args.temperature = 0.03
@@ -711,21 +803,37 @@ if __name__=="__main__":
             args.dbscan_eps = 0.06
             args.min_samples = 2
 
-        elif dataset == 'unsw':
+        elif dataset == 'unsw-iot':
             args.selected_class = [0,1]
-            add_order = [2,3,4,5,6,7,8,9,10,11,12,13,14,15]
-            args.batch_size = 256
+            add_order = [2,3,4,5,6,7,8,9,10,11,12,13,14,15,-1]
+            args.batch_size = 512
             args.learning_rate = 0.001
             args.temperature = 0.1
             args.prune_T = 5
             args.dbscan_eps = 0.06
             args.min_samples = 2
 
-        record_list_name = ['dataset','add_order','choose_threshold','temperature','prune_T','dbscan_eps','org_acc',\
-                            'detection_acc','choose_TPR','choose_FPR','final_acc','rule_number']
 
-        # output_csv = 'prune_explore_' + str(args.thres_extend) + "proto_"+str(args.attack_max_samples)+str(args.test_split_size)+".csv"
-        output_csv =  str(args.thr_method) + "proto_"+str(args.attack_max_samples)+str(args.test_split_size)+".csv"
+        elif dataset == 'unsw-nb15':
+            args.selected_class = [0,1]
+            add_order = [2,3,4,5,6,7,8,9,-1]
+            args.batch_size = 512
+            args.learning_rate = 0.001
+            args.attack_max_samples = 30000
+            args.cls_threshold = 1
+
+            # args.boost_num = 5
+            # args.temperature = 0.510702046
+            # args.prune_T = 10
+            # args.dbscan_eps = 0.017891946
+            
+            args.min_samples = 2
+
+
+        record_list_name = ['dataset','add_order','choose_threshold','boost_num','temperature','prune_T','dbscan_eps',\
+                            'detection_acc','choose_TPR','choose_FPR','final_acc','rule_number',"next_rule_num","remain_num","conflict_rule_num","remain_conflict_rules_num","save_num"]
+
+        output_csv = "unsw2_2_proto_"+str(args.attack_max_samples)+str(args.test_split_size)+".csv"
 
         # 检查CSV文件是否存在，如果不存在则创建并写入表头
         if not os.path.exists(output_csv):

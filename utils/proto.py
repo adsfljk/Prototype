@@ -172,17 +172,17 @@ def init_model(model, init_type,dbscan_eps,min_samples, X_train, y_train, featur
             noise_count = np.sum(cluster_labels == -1)
             noise_counts[label] = noise_count
         
-        print("\n聚类中心及样本数量:")
-        for label, cluster_info in centers.items():
-            print(f"类别 {label}:")
-            for cluster, info in cluster_info.items():
-                print(f"  聚类 {cluster}:", end="")
+        # print("\n聚类中心及样本数量:")
+        # for label, cluster_info in centers.items():
+            # print(f"类别 {label}:")
+            # for cluster, info in cluster_info.items():
+                # print(f"  聚类 {cluster}:", end="")
                 #print(f"    中心: {info['center']}")
-                print(f"    样本数量: {info['count']}")
+                # print(f"    样本数量: {info['count']}")
 
-        print("\n噪声点数量:")
-        for label, count in noise_counts.items():
-            print(f"类别 {label}: {count}")
+        # print("\n噪声点数量:")
+        # for label, count in noise_counts.items():
+            # print(f"类别 {label}: {count}")
         
         
         model.class_prototype = []
@@ -191,12 +191,17 @@ def init_model(model, init_type,dbscan_eps,min_samples, X_train, y_train, featur
 
         for i in range(model.num_classes):
             # set .cuda() first, otherwise not leaf node (cannot be optimized) 
-            
+            if i not in list(centers.keys()):
+                model.class_prototype.append(nn.Parameter(torch.FloatTensor(1, 0, model.feature_num).cuda()))
+                model.class_transform.append(nn.Parameter(torch.zeros(1, 0, model.feature_num).cuda() + 1))
+                continue
         
             model.class_prototype.append(nn.Parameter(torch.FloatTensor(1, len(centers[i]), model.feature_num).cuda()))
             model.class_transform.append(nn.Parameter(torch.zeros(1, len(centers[i]), model.feature_num).cuda() + 1))
         
         for i in range(model.num_classes):
+            if i not in list(centers.keys()):
+                continue
             for idx, cluster in enumerate(centers[i]):
                 # 不要用.data直接赋值，会产生数值错误
                 with torch.no_grad():
